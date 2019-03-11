@@ -37,7 +37,7 @@ class map_capture():
        
         return ((thresh.flatten()/2.55).astype(int))
     
-    def __find_aruco_coor_angle(self,corners,i):
+    def __get_aruco_coor_angle(self,corners,i):
          #Camera calibration parameters
         cameraMatrix = np.array([[1.3953673275755928e+03, 0, 9.9285445205853750e+02], [0,1.3880458574466945e+03, 5.3905119245877574e+02],[ 0., 0., 1.]])
         distCoeffs = np.array([5.7392039180004371e-02, -3.4983260309560962e-02,-2.5933903577082485e-03, 3.4269688895033714e-03,-1.8891849772162170e-01 ])
@@ -70,13 +70,17 @@ class map_capture():
      
         angle = (-angle)
 
-        distance_aruco_to_platform_centre = math.sqrt((((217/2)-50)*conversion_factor)**2 + (((407/2)-50)*conversion_factor)**2)
-        angle_offset = math.atan(((407/2)*conversion_factor)/((217/2)*conversion_factor)) - (math.pi)/2
+        return (aruco_x_coor,aruco_y_coor,angle,conversion_factor)
+
+    def __get_object_center_from_aruco(self,aruco_x_coor,aruco_y_coor,angle,distance_x,distance_y,distance_offset,conversion_factor):
+
+        distance_aruco_to_platform_centre = math.sqrt((((distance_x/2)-distance_offset)*conversion_factor)**2 + (((distance_y/2)-distance_offset)*conversion_factor)**2)
+        angle_offset = math.atan(((distance_y/2)*conversion_factor)/((distance_x/2)*conversion_factor)) - (math.pi)/2
         
         platform_center_x = int(aruco_x_coor + distance_aruco_to_platform_centre*math.cos(angle-angle_offset))
         platform_center_y = int(aruco_y_coor - distance_aruco_to_platform_centre*math.sin(angle-angle_offset))
         
-        return(platform_center_x,platform_center_y,angle,conversion_factor)
+        return(platform_center_x,platform_center_y)
     
     def __mask_object_with_aruco_coor(self,x0,y0,angle,conversion_factor,object_height,object_width):
         #Draw rotated rectangle
@@ -96,7 +100,28 @@ class map_capture():
         
         rect_corners = np.array([[pt0],[pt1],[pt2],[pt3]])
         
-        cv2.fillPoly(self.aruco_frame,[rect_corners],(0,0,0))
+        #cv2.fillPoly(self.aruco_frame,[rect_corners],(0,0,0))
+        
+    def __detect_blocks_in_roi(self,x0,y0,angle,conversion_factor,object_height,object_width):
+        
+        angle = -angle
+        b = math.cos(angle) * 0.5
+        a = math.sin(angle) * 0.5
+        pt0 = (int(x0 - a * object_height - b * object_width), int(y0 + b * object_height - a * object_width))
+        pt1 = (int(x0 + a * object_height - b * object_width), int(y0 - b * object_height - a * object_width))
+        pt2 = (int(2 * x0 - pt0[0]), int(2 * y0 - pt0[1]))
+        pt3 = (int(2 * x0 - pt1[0]), int(2 * y0 - pt1[1]))
+        
+        mask = np.array([[pt0],[pt1],[pt2],[pt3]], dtype=np.int32) 
+        #Create a new array filled with zeros, size equal to size of the image to be filtered
+        image2 = np.zeros((480, 640), np.int8)
+        
+        cv2.fillPoly(image2, [mask],255)
+        
+        maskimage2 = cv2.inRange(image2, 1, 255)
+        out = cv2.bitwise_and(self.aruco_frame, self.aruco_frame, mask=maskimage2)
+        
+        cv2.imshow("test",out)
     
     def get_transform(self):
         
@@ -105,7 +130,9 @@ class map_capture():
         ret, self.aruco_frame = self.video.read()
  
         gray = cv2.cvtColor(self.aruco_frame, cv2.COLOR_BGR2GRAY)
-        retval, gray = cv2.threshold(gray,100,255,cv2.THRESH_BINARY)  
+        
+        T = cv2.getTrackbarPos('T','Thresh')
+        retval, gray = cv2.threshold(gray,T,255,cv2.THRESH_BINARY)  
     
         cv2.imshow("Thresh",gray)
     
@@ -125,17 +152,34 @@ class map_capture():
             for i in range(0,int(ids.size)):
                 
                 
-                x,y,angle,conversion_factor = self.__find_aruco_coor_angle(corners,i)
-                platform_height = 370*conversion_factor
-                platform_width = 420*conversion_factor
-                self.__mask_object_with_aruco_coor(x,y,angle,conversion_factor,platform_height,platform_width)
+                aruco_x_coor,aruco_y_coor,angle,conversion_factor = self.__get_aruco_coor_angle(corners,i)
+                
+                #Distance from the center of the aruco marker to the centre of the object in mm
+                distance_x = 206
+                distance_y = 460
+                
+                #distance from the center of the aruco marker to the bottom left corner of the platform
+                distance_offset = 50
+                
+                station_center_x,station_center_y = self.__get_object_center_from_aruco(aruco_x_coor,aruco_y_coor,angle,distance_x,distance_y,distance_offset,conversion_factor)
+                
+                
+                station_height = 200*conversion_factor
+                station_width = 200*conversion_factor
+                self.__detect_blocks_in_roi(station_center_x,station_center_y,angle,conversion_factor,station_height,station_width)
+            
+                platform_center_x,platform_center_y = self.__get_object_center_from_aruco(aruco_x_coor,aruco_y_coor,angle,distance_x,distance_y,distance_offset,conversion_factor)
+                platform_height = 450*conversion_factor
+                platform_width = 500*conversion_factor
+                self.__mask_object_with_aruco_coor(platform_center_x,platform_center_y,angle,conversion_factor,platform_height,platform_width)
+                
                 
                 found = 1
                 
                 transform_dict = {
                         "state" : found,
-                        "x" : x,
-                        "y" : y,
+                        "x" : platform_center_x,
+                        "y" : platform_center_y,
                         "angle" : angle
                         }
                 
@@ -162,11 +206,17 @@ class map_capture():
         cv2.destroyAllWindows()
         self.video.release()
         
+    def nothing(self,x):
+        pass
+        
 if __name__ == '__main__':
-    map = map_capture(0,640,480)
+    map = map_capture(1,640,480)
+    # create trackbars for color change
+    cv2.namedWindow('Thresh')
+    cv2.createTrackbar('T','Thresh',248,255,map.nothing)
     
     while 1:
-       
+        
         map.get_transform()
         map.get_new_frame()
         map.show_frame()
