@@ -14,13 +14,21 @@ import numpy as np
 class map_capture():
     
     def __init__(self,camera_option,frame_width,frame_height):
+        
+        
+        
         self.video = cv2.VideoCapture(camera_option)
         self.video.set(cv2.CAP_PROP_BUFFERSIZE, 1);
         self.video.set(cv2.CAP_PROP_AUTOFOCUS, 0)
         
+        #self.video.open(cv2.CAP_DSHOW);
+
+        #self.video.set(cv2.CAP_PROP_FRAME_WIDTH, 1920);
+        #self.video.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080);
+        
         ret, self.aruco_frame = self.video.read()
-        self.video.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width) # set the resolution - 640,480
-        self.video.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
+        #self.video.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width) # set the resolution - 640,480
+        #self.video.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
         
     def get_frame_resolution(self):
         width = self.video.get(cv2.CAP_PROP_FRAME_WIDTH)   # float
@@ -44,8 +52,9 @@ class map_capture():
         
         #Estimate pose of each marker and return the values rvet and tvec---different from camera coefficients
         rvec, tvec,_ = aruco.estimatePoseSingleMarkers(corners[i], 0.05, cameraMatrix, distCoeffs) 
+        (rvec-tvec).any() # get rid of that nasty numpy value array error
 
-        aruco.drawAxis(self.aruco_frame, cameraMatrix, distCoeffs, rvec[0], tvec[0], 0.1) #Draw Axis
+        #aruco.drawAxis(self.aruco_frame, cameraMatrix, distCoeffs, rvec[0], tvec[0], 0.1) #Draw Axis
         aruco.drawDetectedMarkers(self.aruco_frame, corners) #Draw A square around the markers
         aruco_x_coor = (corners[i][0][0][0] + corners[i][0][1][0] + corners[i][0][2][0] + corners[i][0][3][0]) / 4
         aruco_y_coor = (corners[i][0][0][1] + corners[i][0][1][1] + corners[i][0][2][1] + corners[i][0][3][1]) / 4
@@ -111,6 +120,10 @@ class map_capture():
         pt1 = (int(x0 + a * object_height - b * object_width), int(y0 - b * object_height - a * object_width))
         pt2 = (int(2 * x0 - pt0[0]), int(2 * y0 - pt0[1]))
         pt3 = (int(2 * x0 - pt1[0]), int(2 * y0 - pt1[1]))
+        cv2.line(self.aruco_frame, pt0, pt1, (255, 255, 255), 1)
+        cv2.line(self.aruco_frame, pt1, pt2, (255, 255, 255), 1)
+        cv2.line(self.aruco_frame, pt2, pt3, (255, 255, 255), 1)
+        cv2.line(self.aruco_frame, pt3, pt0, (255, 255, 255), 1)
         
         mask = np.array([[pt0],[pt1],[pt2],[pt3]], dtype=np.int32) 
         #Create a new array filled with zeros, size equal to size of the image to be filtered
@@ -119,9 +132,11 @@ class map_capture():
         cv2.fillPoly(image2, [mask],255)
         
         maskimage2 = cv2.inRange(image2, 1, 255)
-        out = cv2.bitwise_and(self.aruco_frame, self.aruco_frame, mask=maskimage2)
+        output = cv2.bitwise_and(self.aruco_frame, self.aruco_frame, mask=maskimage2)
         
-        cv2.imshow("test",out)
+        hsv_frame = cv2.cvtColor(output, cv2.COLOR_BGR2HSV)
+        
+        cv2.imshow("__detect_blocks_in_roi",output)
     
     def get_transform(self):
         
@@ -131,18 +146,20 @@ class map_capture():
  
         gray = cv2.cvtColor(self.aruco_frame, cv2.COLOR_BGR2GRAY)
         
-        T = cv2.getTrackbarPos('T','Thresh')
-        retval, gray = cv2.threshold(gray,T,255,cv2.THRESH_BINARY)  
+        T = cv2.getTrackbarPos('T','trackbars')
+        retval, thesh = cv2.threshold(gray,T,255,cv2.THRESH_BINARY)
     
-        cv2.imshow("Thresh",gray)
-    
+        cv2.imshow("Thresh",thesh)
         aruco_dict = aruco.Dictionary_get(aruco.DICT_4X4_250) 
         parameters =  aruco.DetectorParameters_create()
      
         #lists of ids and the corners beloning to each ids
-        corners, ids, rejectedImgPoints = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+        corners, ids, rejectedImgPoints = aruco.detectMarkers(thesh, aruco_dict, parameters=parameters)
         
         self.aruco_frame = aruco.drawDetectedMarkers(self.aruco_frame, corners,ids,(255,255,0))
+        platform_center_x = 0
+        platform_center_y = 0
+        angle = 0
         
         
         #If an aruco marker is found
@@ -151,31 +168,40 @@ class map_capture():
             #For all aruco markers found
             for i in range(0,int(ids.size)):
                 
+                if ids[0][i] == 34:
+                    
+                    aruco_x_coor,aruco_y_coor,angle,conversion_factor = self.__get_aruco_coor_angle(corners,i)
                 
-                aruco_x_coor,aruco_y_coor,angle,conversion_factor = self.__get_aruco_coor_angle(corners,i)
+                    #Distance from the center of the aruco marker to the centre of the object in mm
+                    mach_distance_x = 1#200
+                    mach_distance_y = 800#480
+                    
+                    #distance from the center of the aruco marker to the bottom left corner of the platform
+                    distance_offset = 0
+                    
+                    station_center_x,station_center_y = self.__get_object_center_from_aruco(aruco_x_coor,aruco_y_coor,angle,mach_distance_x,mach_distance_y,distance_offset,conversion_factor)
                 
-                #Distance from the center of the aruco marker to the centre of the object in mm
-                distance_x = 206
-                distance_y = 460
+                    station_height = 200*conversion_factor
+                    station_width = 200*conversion_factor
+                    self.__detect_blocks_in_roi(station_center_x,station_center_y,angle,conversion_factor,station_height,station_width)
                 
-                #distance from the center of the aruco marker to the bottom left corner of the platform
-                distance_offset = 50
-                
-                station_center_x,station_center_y = self.__get_object_center_from_aruco(aruco_x_coor,aruco_y_coor,angle,distance_x,distance_y,distance_offset,conversion_factor)
-                
-                
-                station_height = 200*conversion_factor
-                station_width = 200*conversion_factor
-                self.__detect_blocks_in_roi(station_center_x,station_center_y,angle,conversion_factor,station_height,station_width)
-            
-                platform_center_x,platform_center_y = self.__get_object_center_from_aruco(aruco_x_coor,aruco_y_coor,angle,distance_x,distance_y,distance_offset,conversion_factor)
-                platform_height = 450*conversion_factor
-                platform_width = 500*conversion_factor
-                self.__mask_object_with_aruco_coor(platform_center_x,platform_center_y,angle,conversion_factor,platform_height,platform_width)
-                
-                
+                elif ids[0][i] == 43:
+                    
+                    plat_distance_x = 200
+                    plat_distance_y = 480
+                    distance_offset = 50
+                    
+                    aruco_x_coor,aruco_y_coor,angle,conversion_factor = self.__get_aruco_coor_angle(corners,i)
+                    platform_center_x,platform_center_y = self.__get_object_center_from_aruco(aruco_x_coor,aruco_y_coor,angle,plat_distance_x,plat_distance_y,distance_offset,conversion_factor)
+                    platform_height = 500*conversion_factor
+                    platform_width = 550*conversion_factor
+                    self.__mask_object_with_aruco_coor(platform_center_x,platform_center_y,angle,conversion_factor,platform_height,platform_width)
+                    
+                else:
+                    print("Unrecongnised ArUco marker")
+                    
+                    
                 found = 1
-                
                 transform_dict = {
                         "state" : found,
                         "x" : platform_center_x,
@@ -209,17 +235,41 @@ class map_capture():
     def nothing(self,x):
         pass
         
-if __name__ == '__main__':
-    map = map_capture(1,640,480)
-    # create trackbars for color change
-    cv2.namedWindow('Thresh')
-    cv2.createTrackbar('T','Thresh',248,255,map.nothing)
+    def frame_calibration_test(self):
+        ret, frame = self.video.read()
+        
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
+       
+        
+        Block_Size = (cv2.getTrackbarPos('Block_Size','test')*2)-1
+        Constant_C = cv2.getTrackbarPos('Constant_C','test')
+        
+        mean = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_MEAN_C,cv2.THRESH_BINARY,Block_Size,Constant_C)#block size - even number,Constant away from mean
+        gaus = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY,Block_Size,Constant_C)#6,1
+        
+        cv2.imshow('mean',mean)
+        cv2.imshow('gaus',gaus)
+        
+    def generate_trackbars(self):
+        cv2.namedWindow('trackbars')
+        #cv2.createTrackbar('Constant_C','test',1,255,map.nothing)
+        #cv2.createTrackbar('Block_Size','test',2,255,map.nothing)
+        cv2.createTrackbar('T','trackbars',110,255,map.nothing)
+        
+        
+        
+if __name__ == '__main__':
+    map = map_capture(0,640,480)
+
+    map.generate_trackbars()
+
     while 1:
         
         map.get_transform()
         map.get_new_frame()
         map.show_frame()
+        #map.frame_calibration_test()
         k = cv2.waitKey(1) & 0xff
         #Press escape to close program and take a picture
         if k == 27 :
